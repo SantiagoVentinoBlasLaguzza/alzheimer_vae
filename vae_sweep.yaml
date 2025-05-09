@@ -1,0 +1,33 @@
+project: VAE_ADCN
+method: bayes
+metric:
+  name: CV_mu_LogReg_AUC_mean
+  goal: maximize
+
+working_dir: "/content/drive/MyDrive/AAL_166"
+
+command:
+  - ${env}
+  - python
+  - /content/drive/MyDrive/AAL_166/hyperparameters.py
+  - ${args}
+
+# Solo 16–32 filtros permiten batch 64–128 sin OOM
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-3
+  batch_size:     {values: [32, 64, 128]}
+  k_filters:      {values: [16, 32, 48]}
+  latent_dim:     {values: [ 128, 256, 512, 768]}
+  beta:           {values: [1, 10, 25, 50, 100, 150, 200]}
+  beta_ramp_epochs: {values: [100, 200, 400, 600]}
+  epochs:         {value: 150}
+  eval_interval:  {value: 25}
+
+concurrency: 1          # un job a la vez en la GPU
+early_terminate:
+  type: hyperband
+  min_iter: 40
+  s: 2
