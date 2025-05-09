@@ -1,0 +1,10 @@
+seed: 42
+n_splits: 5
+batch_size: 16
+apply_specific_scalings: False # Master switch for the sqrt/log type scalings
+apply_zscore: True
+transformations: # Controls individual scalings if apply_specific_scalings is True
+  scale_corr:            True    # Si quieres normalizar canal 0
+  scale_nmi:             True    # Si quieres normalizar canal 1
+  scale_gc:              True    # …
+  scale_dcv:             True
