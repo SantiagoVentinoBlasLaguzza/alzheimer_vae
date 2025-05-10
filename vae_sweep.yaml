@@ -23,8 +23,8 @@ parameters:
   latent_dim:     {values: [ 128, 256, 512, 768]}
   beta:           {values: [1, 10, 25, 50, 100, 150, 200]}
   beta_ramp_epochs: {values: [100, 200, 400, 600]}
-  epochs:         {value: 20}
-  eval_interval:  {value: 10}
+  epochs:         {value: 1200}
+  eval_interval:  {value: 50}
 
 concurrency: 1          # un job a la vez en la GPU
 early_terminate:

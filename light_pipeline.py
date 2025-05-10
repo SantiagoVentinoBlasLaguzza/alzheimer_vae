@@ -84,7 +84,7 @@ DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cp
 
 # Constants for HalvingRandomSearchCV's min_resources calculation
 MIN_RESOURCES_FRACTION: float = 0.2  # Fraction of training samples for min_resources
-MIN_RESOURCES_ABSOLUTE: int = 20     # Absolute minimum number of samples for min_resources
+MIN_RESOURCES_ABSOLUTE: int = 25     # Absolute minimum number of samples for min_resources
 
 # --- Global Variables (to be potentially configured by main script) ---
 # These can be overridden by the main script if needed, e.g., from wandb.config
@@ -316,7 +316,7 @@ def _get_default_model_definitions() -> Dict[str, Tuple[Any, Dict[str, Any]]]:
     return {
         "LogReg": (
             LogisticRegression(
-                solver="liblinear", # Good for L1/L2, smaller datasets
+                solver="saga", # Good for L1/L2, smaller datasets
                 class_weight="balanced",
                 max_iter=5000, # Increased for convergence
                 random_state=SEED,
@@ -357,8 +357,8 @@ def run_cross_validation(
     *,
     clinical_features: Optional[np.ndarray] = None,
     cv_run_tag: str = "mu_features", # Tag for logging (e.g., "mu", "mu_sigma")
-    num_outer_folds: int = 5, # Original script used 3, common practice is 5 or 10
-    num_inner_folds: int = 3, # Original script used 2
+    num_outer_folds: int = 3, # Original script used 3, common practice is 5 or 10
+    num_inner_folds: int = 2, # Original script used 2
     use_variance_filter: bool = True, # Whether to apply variance filter
     variance_filter_thresh: float = VAR_TH # Threshold for variance filter
 ) -> pd.DataFrame:
@@ -588,7 +588,7 @@ if __name__ == "__main__":
         dummy_y,
         clinical_features=sex_onehot, # Use the generated sex features
         cv_run_tag="dummy_data_test",
-        num_outer_folds=2, # Fewer folds for quick test
+        num_outer_folds=3, # Fewer folds for quick test
         num_inner_folds=2
     )
 

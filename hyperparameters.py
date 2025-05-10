@@ -26,6 +26,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import torch.backends.cuda as torch_back
+# amp is already imported above
+#from torch import amp
+import os
+os.environ["TORCH_INDUCTOR_DISABLE_MAX_AUTOTUNE_GEMM"] = "1"
+
 
 # Scikit-learn imports
 from sklearn.linear_model import LogisticRegression
@@ -52,7 +57,7 @@ warnings.filterwarnings('ignore', category=UserWarning) # General UserWarning su
 
 # --- W&B Service Requirement ---
 # os.environ["WANDB_REQUIRE_SERVICE"] = "True" # Force modern service if needed
-wandb.require("service")
+#wandb.require("service")
 
 # --- Project-specific imports & Path Configuration ---
 # Assuming 'settings.py' and 'light_pipeline.py' are in the same directory or accessible via PYTHONPATH
@@ -95,7 +100,7 @@ try:
     print(f"Successfully imported VAR_TH ({VAR_TH}) and NUM_WORKERS_T4 ({NUM_WORKERS_T4}) from settings.py")
 except ImportError:
     print("Warning: settings.py not found or VAR_TH/NUM_WORKERS_T4 not defined. Using fallback values.")
-    VAR_TH = 1e-4 # Fallback value, ensure this is appropriate
+    VAR_TH = 1e-5 # Fallback value, ensure this is appropriate
     NUM_WORKERS_T4 = 0 # Fallback value
 
 # --- PyTorch Accelerators ---
@@ -105,7 +110,7 @@ torch.backends.cudnn.benchmark = True # Good for fixed input sizes
 torch.set_float32_matmul_precision("high") # Or "medium"
 
 # ────────────────────── Global Configuration & Constants ──────────────────────
-PROJECT_DIR: str = "/content/drive/MyDrive/GrandMeanNorm" # Consider making this configurable
+PROJECT_DIR: str = "/content/drive/MyDrive/AAL_166" # Consider making this configurable
 CURRENT_FOLD: int = 1 # Renamed from FOLD to avoid ambiguity
 DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED: int = 42
@@ -461,7 +466,7 @@ def encode_to_mu(encoder: Encoder, X_data: torch.Tensor, batch_size: int = 256) 
     for (x_batch,) in loader:
         x_batch = x_batch.to(DEVICE, memory_format=torch.channels_last) # Optimize memory format for conv
         # Use Automatic Mixed Precision (AMP) if on CUDA for potentially faster inference
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(DEVICE.type == 'cuda')):
+        with torch.amp.autocast(device_type="cuda",dtype=torch.bfloat16):
             mu, _ = encoder(x_batch)
         all_mu.append(mu.cpu().float().numpy()) # Move to CPU, convert to float32 numpy
 
@@ -553,7 +558,9 @@ def train_vae(
     # bfloat16 is generally preferred over float16 if supported, for better stability.
     amp_dtype = torch.bfloat16 if amp_enabled and torch.cuda.is_bf16_supported() else torch.float16
     # GradScaler helps prevent underflow/overflow issues with float16
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    amp_enabled = (DEVICE.type == "cuda")
+    scaler = torch.amp.GradScaler(enabled=amp_enabled) 
+    #scaler = 	torch.amp.GradScaler(device_type="cuda")
     print(f"Automatic Mixed Precision (AMP) Enabled: {amp_enabled}, dtype: {amp_dtype}")
 
     # --- Training Loop ---
@@ -578,7 +585,7 @@ def train_vae(
             x_batch = x_batch.to(DEVICE, memory_format=torch.channels_last, non_blocking=True)
             optimizer.zero_grad(set_to_none=True) # More efficient than setting to zero
 
-            with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=amp_enabled):
+            with torch.amp.autocast(device_type="cuda",dtype=amp_dtype):
                 x_reconstructed, mu, logvar = vae_model(x_batch)
                 
                 # Beta scheduling: ramp up beta using a square root curve
@@ -610,7 +617,7 @@ def train_vae(
         with torch.no_grad(): # Disable gradient calculations for validation
             for (x_val_batch,) in val_recon_loader:
                 x_val_batch = x_val_batch.to(DEVICE, memory_format=torch.channels_last, non_blocking=True)
-                with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=amp_enabled):
+                with torch.amp.autocast(device_type="cuda",dtype=amp_dtype):
                     x_val_reconstructed, mu_val, logvar_val = vae_model(x_val_batch)
                     # Use the full beta for validation loss calculation
                     v_loss, v_recon, v_kld = vae_loss_function(
@@ -769,7 +776,7 @@ def run_quick_metrics(
     # 'liblinear' is good for smaller datasets and L1/L2 penalties.
     # 'saga' could be an alternative for larger datasets.
     log_reg_clf = LogisticRegression(
-        solver="liblinear",
+        solver="saga",
         class_weight="balanced", # Handles class imbalance
         max_iter=4000,           # Increased max_iter for convergence
         random_state=SEED
@@ -845,28 +852,55 @@ def _prepare_adcn_data_for_cv(
     return X_combined_adcn, y_combined_adcn, ids_combined_adcn
 
 
-def _log_cv_dataframe_means_to_wandb(cv_results_df: pd.DataFrame, cv_tag: str) -> None:
-    """
-    Logs mean AUC and Balanced Accuracy from CV results DataFrame to W&B.
+# --- hyperparameters.py ---------------------
+import re   # ya estaba importado
 
-    Args:
-        cv_results_df (pd.DataFrame): DataFrame with CV results (must have 'model', 'auc', 'bal' columns).
-        cv_tag (str): Tag for the CV run (e.g., "mu", "mu_sigma").
+def _log_cv_dataframe_means_to_wandb(df: pd.DataFrame, tag: str) -> pd.DataFrame:
     """
-    if cv_results_df.empty:
-        print(f"  CV results DataFrame for tag '{cv_tag}' is empty. Skipping W&B logging.")
-        return
+    Estandariza nombres, elimina duplicados y loguea medias a W&B.
+    Devuelve el DF con nombres consistentes.
+    """
+    # --- 1. Renombrar sin generar duplicados --------------------
+    rename_map = {
+        "model_base": "model",          #   →  columna “base” será la referencia
+        "balanced_accuracy": "bal",
+        "f1_score": "f1",
+        "pca_applied": "pca",
+        "cv_tag": "tag",
+    }
+    df = df.rename(columns=rename_map)
 
-    mean_metrics = cv_results_df.groupby("model")[["auc", "bal"]].mean()
-    for model_name, row_metrics in mean_metrics.iterrows():
+    # Si por alguna razón todavía viene 'model_config', mantenla aparte
+    if "model_config" in df.columns and "model" not in df.columns:
+        df = df.rename(columns={"model_config": "model"})
+
+    # --- 2. Garantizar unicidad de nombres ----------------------
+    # pandas>=2.1 tiene df.columns.duplicated(); para <2.1 podemos usar:
+    duplicated = df.columns.duplicated(keep="first")
+    if duplicated.any():
+        # Eliminar los duplicados conservando la primera aparición
+        df = df.loc[:, ~duplicated]
+
+    # --- 3. Validar columnas clave ------------------------------
+    req = {"model", "auc", "bal"}
+    missing = req.difference(df.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas {sorted(missing)} en CV-DF (tag={tag})")
+
+    # --- 4. Agrupar y loguear -----------------------------------
+    mean_df = df.groupby("model")[["auc", "bal"]].mean()
+
+    for mdl, row in mean_df.iterrows():
         wandb.log({
-            f"CV_{cv_tag}_{model_name}_AUC_mean": row_metrics.auc,
-            f"CV_{cv_tag}_{model_name}_BAL_mean": row_metrics.bal
+            f"CV_{tag}_{mdl}_AUC_mean": row.auc,
+            f"CV_{tag}_{mdl}_BAL_mean": row.bal,
         })
-        # Also update W&B summary for these key metrics
-        wandb.summary[f"CV_{cv_tag}_{model_name}_AUC_mean"] = row_metrics.auc
-        wandb.summary[f"CV_{cv_tag}_{model_name}_BAL_mean"] = row_metrics.bal
-    print(f"  Logged mean CV metrics for tag '{cv_tag}' to W&B.")
+        wandb.summary[f"CV_{tag}_{mdl}_AUC_mean"] = row.auc
+        wandb.summary[f"CV_{tag}_{mdl}_BAL_mean"] = row.bal
+
+    return df
+
+
 
 
 def run_final_classifier_evaluation_cv(
@@ -895,7 +929,7 @@ def run_final_classifier_evaluation_cv(
     """
     if not LIGHT_PIPELINE_AVAILABLE:
         print("⚠️ light_pipeline.py is not available. Skipping final classifier CV evaluation.")
-        wandb.log({"CV_mu_LogReg_AUC_mean": 0.0}) # Log a default value
+        #wandb.log({"CV_mu_LogReg_AUC_mean": 0.0}) # Log a default value
         wandb.summary["CV_mu_LogReg_AUC_mean"] = 0.0
         return 0.0
 
@@ -937,21 +971,27 @@ def run_final_classifier_evaluation_cv(
             print(f"    Latent matrix Z shape for CV: {Z_latent_features.shape}")
 
             # Run cross-validation using light_pipeline's run_cross_validation
+            # ...
             cv_results_df = lp_run_cross_validation(
-                Z_latent_features, y_adcn_cv, clinical=clinical_features_cv, tag=cv_tag
-            )
+                                Z_latent_features, y_adcn_cv,
+                                clinical_features=clinical_features_cv,
+                                cv_run_tag=cv_tag
+                        )
 
             if cv_results_df.empty:
                 raise ValueError("lp_run_cross_validation returned an empty DataFrame.")
 
-            _log_cv_dataframe_means_to_wandb(cv_results_df, cv_tag)
+            #  ▸ cv_results_df ya viene renombrado
+            cv_results_df = _log_cv_dataframe_means_to_wandb(cv_results_df, cv_tag)
 
-            # Store the primary metric for W&B sweep (LogReg AUC on mu-features)
-            if not use_sigma_features and "LogReg" in cv_results_df.model.unique():
-                primary_auc_metric = float(cv_results_df[cv_results_df.model == "LogReg"].auc.mean())
-                # Log and summarize this specific metric as it's often the target for sweeps
-                wandb.log({f"CV_{cv_tag}_LogReg_AUC_mean": primary_auc_metric}) # Already logged by _log_cv_dataframe_means
-                wandb.summary["CV_mu_LogReg_AUC_mean"] = primary_auc_metric # Key summary metric
+            # Ahora esta línea no volverá a fallar
+            if (not use_sigma_features) and ("LogReg" in cv_results_df.model.unique()):
+                primary_auc_metric = float(
+                    cv_results_df.loc[cv_results_df.model == "LogReg", "auc"].mean()
+                )
+                #wandb.log({f"CV_{cv_tag}_LogReg_AUC_mean": primary_auc_metric})
+                wandb.summary["CV_mu_LogReg_AUC_mean"] = primary_auc_metric
+
 
         except NotImplementedError as nie:
             print(f"    Skipping tag '{cv_tag}': {nie}") # If extract_latent_features doesn't support sigma
@@ -959,7 +999,7 @@ def run_final_classifier_evaluation_cv(
             print(f"    ⚠️ Evaluation for tag '{cv_tag}' failed during CV: {e}")
             # If mu-features LogReg fails, ensure the primary metric is set to 0 for W&B
             if not use_sigma_features:
-                wandb.log({"CV_mu_LogReg_AUC_mean": 0.0})
+                #wandb.log({"CV_mu_LogReg_AUC_mean": 0.0})
                 wandb.summary["CV_mu_LogReg_AUC_mean"] = 0.0
                 primary_auc_metric = 0.0
 
@@ -1043,7 +1083,7 @@ def evaluate_classifiers_on_test_set(
     if classifier_definitions is None:
         classifier_definitions = {
             "LogReg": (
-                LogisticRegression(solver="liblinear", class_weight="balanced", max_iter=5000, random_state=SEED),
+                LogisticRegression(solver="saga", class_weight="balanced", max_iter=5000, random_state=SEED),
                 {"C": np.logspace(-3, 2, 7), "penalty": ["l1", "l2"]}, True # Has predict_proba
             ),
             "SVM_RBF": (
@@ -1174,7 +1214,13 @@ def main():
     # Initialize Weights & Biases
     # `reinit=True` allows multiple wandb.init calls in a single script (e.g., for loops)
     # `config=WANDB_DEFAULTS` provides default hyperparameters that can be overridden by a sweep.
-    wandb.init(project="beta_vae_classification_sweep", config=WANDB_DEFAULTS, reinit=True) # Replace project name
+# justo al principio de main(), después de wandb.require():
+    wandb.init(
+        project="beta_vae_classification_sweep",
+        config=WANDB_DEFAULTS,
+        reinit=True       # sigue funcionando, sólo que está deprecado
+    )
+
     
     # --- Define W&B Metrics ---
     # This helps W&B dashboard to correctly plot and summarize metrics.
