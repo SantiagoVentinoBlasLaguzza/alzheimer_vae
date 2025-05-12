@@ -18,7 +18,7 @@ parameters:
     distribution: log_uniform_values
     min: 1e-4
     max: 1e-3
-  batch_size:     {values: [16, 32, 64, 128]}
+  batch_size:     {values: [32, 64, 128]}
   k_filters:      {values: [ 32, 48]}
   latent_dim:     {values: [ 128, 256, 512, 768]}
   beta:           {values: [1, 10, 25, 50, 100, 150, 200]}
