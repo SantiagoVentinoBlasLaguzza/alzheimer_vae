@@ -75,7 +75,12 @@ try:
     from light_pipeline import extract_latent_features as lp_extract_latent_features, \
                                clinical_onehot_encode_sex as lp_clinical_onehot_encode_sex, \
                                run_cross_validation as lp_run_cross_validation, \
-                               _min_resources as lp_min_resources
+                               _min_resources as lp_min_resources, \
+                               clinical_features_age_sex as lp_clinical_features_age_sex # <--- CORRECTED ALIAS
+    LIGHT_PIPELINE_AVAILABLE = True
+    print("Successfully imported from light_pipeline.py")
+except ImportError as e:
+    print(f"Warning: Could not import from light_pipeline.py. Error: {e}")
     # Use aliased names to avoid potential conflicts if these names are defined elsewhere
     LIGHT_PIPELINE_AVAILABLE = True
     print("Successfully imported from light_pipeline.py")
@@ -949,7 +954,8 @@ def run_final_classifier_evaluation_cv(
 
     # Attempt to get clinical features (if applicable)
     try:
-        clinical_features_cv = lp_clinical_onehot_encode_sex(ids_adcn_cv)
+        clinical_features_cv = lp_clinical_features_age_sex(ids_adcn_cv)
+        #clinical_features_cv = lp_clinical_onehot_encode_sex(ids_adcn_cv)
         print(f"  Clinical one-hot features shape for CV: {clinical_features_cv.shape}")
     except Exception as e:
         print(f"  Warning: Failed to generate clinical one-hot features for CV. Error: {e}")
@@ -1284,6 +1290,9 @@ def main():
     )
     print(f"\nPrimary sweep metric (CV_mu_LogReg_AUC_mean): {main_sweep_metric:.4f}")
     # This metric is already logged and summarized by run_final_classifier_evaluation_cv
+        # ADD THIS LINE:
+    if wandb.run: # Ensure there's an active W&B run
+        wandb.log({"CV_mu_LogReg_AUC_mean": main_sweep_metric})
 
     # --- Evaluation on the Hold-Out Test Set ---
     # This trains classifiers on (trX+vaX) and evaluates on teX.

@@ -97,6 +97,32 @@ def log_message(message: str, *args, **kwargs) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"{timestamp} | {message}", *args, **kwargs)
 
+# ────────────────────────── NEW: utilidades clínicas completas ──────────
+CSV_META_PATH = "/content/drive/MyDrive/AAL_166"
+
+_meta_df = None  # cache
+
+def _load_metadata(csv_path: str = CSV_META_PATH) -> pd.DataFrame:
+    global _meta_df
+    if _meta_df is None:
+        keep = ["SubjectID", "Age", "Sex"]
+        _meta_df = pd.read_csv(csv_path, usecols=keep).set_index("SubjectID")
+    return _meta_df
+
+def clinical_features_age_sex(subject_ids: np.ndarray) -> np.ndarray:
+    """
+    Devuelve matriz (N, 3):  edad cruda  |  sexo_M  |  sexo_F
+    """
+    meta = _load_metadata()
+    # 1) Edad (vector N×1)
+    age = meta.loc[subject_ids, "Age"].astype(np.float32).values.reshape(-1, 1)
+    # 2) Sexo one-hot
+    sex_raw = meta.loc[subject_ids, "Sex"].fillna("U").values.reshape(-1, 1)
+    sex_ohe = OneHotEncoder(sparse_output=False, handle_unknown="ignore",
+                            categories=[["M", "F", "U"]], dtype=np.float32)\
+              .fit_transform(sex_raw)[:, :2]   # conservamos solo M y F
+    return np.hstack([age, sex_ohe])  # (N,3)
+
 # ───────────────── Helper Functions ─────────────────────────────
 
 def _min_resources(num_train_samples: int) -> int:
@@ -405,12 +431,12 @@ def run_cross_validation(
             log_message(f"⚠️ Fold {fold_num} skipped: One partition (train or test) does not contain both classes.")
             continue
 
-        # --- Optional: Variance-based feature filtering ---
-        if use_variance_filter:
-            Z_train, Z_test = filter_features_by_variance(Z_train, Z_test, threshold=variance_filter_thresh)
-            if Z_train.shape[1] == 0: # All features were filtered out
-                log_message(f"⚠️ Fold {fold_num} skipped: All features removed by variance filter for this fold.")
-                continue
+        # # --- Optional: Variance-based feature filtering ---
+        # if use_variance_filter:
+        #     Z_train, Z_test = filter_features_by_variance(Z_train, Z_test, threshold=variance_filter_thresh)
+        #     if Z_train.shape[1] == 0: # All features were filtered out
+        #         log_message(f"⚠️ Fold {fold_num} skipped: All features removed by variance filter for this fold.")
+        #         continue
 
 
         # --- Optional: Concatenate clinical features ---
@@ -421,6 +447,13 @@ def run_cross_validation(
             current_Z_train = np.hstack([current_Z_train, clinical_train])
             current_Z_test = np.hstack([current_Z_test, clinical_test])
             log_message(f"  Fold {fold_num}: Concatenated clinical features. New Z_train shape: {current_Z_train.shape}")
+
+        # --- Optional: Variance-based feature filtering ---
+        if use_variance_filter:
+            Z_train, Z_test = filter_features_by_variance(Z_train, Z_test, threshold=variance_filter_thresh)
+            if Z_train.shape[1] == 0: # All features were filtered out
+                log_message(f"⚠️ Fold {fold_num} skipped: All features removed by variance filter for this fold.")
+                continue
 
 
         for model_name, (base_estimator, param_search_space) in model_definitions.items():
